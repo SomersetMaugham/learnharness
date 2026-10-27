@@ -34,6 +34,7 @@ import { PROMPTS_OVERRIDE_DIR } from "../../config.ts";
 import { isValidSegmentPath } from "../core/prompt-segments.ts";
 import type { PromptOverrideStore } from "../core/ports.ts";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 /** Absolute path for an override file (unchecked — validate first). */
 function overrideFileFor(segmentPath: string): string {
 	return path.join(PROMPTS_OVERRIDE_DIR, ...segmentPath.split("/"));
@@ -73,7 +74,7 @@ export const promptOverrides: PromptOverrideStore = {
 		if (!isValidSegmentPath(segmentPath)) return;
 		const file = overrideFileFor(segmentPath);
 		fs.mkdirSync(path.dirname(file), { recursive: true });
-		fs.writeFileSync(file, text, "utf-8");
+		writeFileAtomic(file, text);
 	},
 
 	deleteOverride(segmentPath: string): void {

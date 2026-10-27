@@ -18,6 +18,7 @@ import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
 import { phaseAt3Lh } from "../core/phases.ts";
 
+import { writeFileAtomic } from "./atomic-write.ts";
 function chatFile(id: string): string {
 	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid chat id: ${id}`);
 	return path.join(PATHS.chats, `${id}.json`);
@@ -53,16 +54,35 @@ function createChat(title: string, kind?: "practice"): ChatRecord {
 /** THE WRITE CHOKE POINT (schema-versioning wave, owner 2026-10-10): every
  *  record persist goes through here and carries the CURRENT version stamp —
  *  lazy migration means existing files only get stamped on their next write.
- *  A future-version guard lives on the read side (getChat). */
+ *  A future-version guard lives on the read side (getChat). Tmp + rename
+ *  (atomic-write.ts): a crash mid-write never tears the record. */
 function writeChat(record: ChatRecord): void {
-	fs.writeFileSync(chatFile(record.id), JSON.stringify({ ...record, version: CURRENT_CHAT_VERSION }, null, "\t"), "utf-8");
+	writeFileAtomic(chatFile(record.id), JSON.stringify({ ...record, version: CURRENT_CHAT_VERSION }, null, "\t"));
 }
 
 function getChat(id: string): ChatRecord | null {
+	let file: string;
+	try {
+		file = chatFile(id);
+	} catch {
+		return null; // an invalid id names no chat
+	}
+	let text: string;
+	try {
+		text = fs.readFileSync(file, "utf-8");
+	} catch (err) {
+		// Absent is the documented "no such chat"; any other read failure is
+		// worth a log line (review fix, 2026-10-27 — it used to vanish silently).
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") console.error(`[chat ${id}] cannot read ${file}:`, err);
+		return null;
+	}
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(fs.readFileSync(chatFile(id), "utf-8"));
-	} catch {
+		parsed = JSON.parse(text);
+	} catch (err) {
+		// A torn/corrupt record still reads as absent (callers' contract), but
+		// never silently — and the file is left untouched for recovery.
+		console.error(`[chat ${id}] corrupt record left in place at ${file} — hidden from the session list:`, (err as Error).message);
 		return null;
 	}
 	// Honest refusal (owner ruling 2026-10-10): a record stamped NEWER than
