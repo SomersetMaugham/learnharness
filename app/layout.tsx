@@ -1,6 +1,19 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono, Source_Sans_3 } from "next/font/google";
 import "katex/dist/katex.min.css";
+// Bundled Korean reading fonts for Settings > Appearance > Reading font
+// (BUNDLED_READING_FONTS in components/settings/appearance-section.tsx).
+// All are unicode-range sliced, so only the glyph slices a page uses load.
+import "pretendard/dist/web/static/Pretendard-Regular.css";
+import "pretendard/dist/web/static/Pretendard-Bold.css";
+import "pretendard/dist/web/static/Pretendard-Black.css";
+import "@fontsource/nanum-gothic/400.css";
+import "@fontsource/nanum-gothic/700.css";
+import "@fontsource/gowun-dodum/400.css";
+import "@fontsource/gowun-batang/400.css";
+import "@fontsource/gowun-batang/700.css";
+import "@fontsource/gaegu/400.css";
+import "@fontsource/gaegu/700.css";
 import "./globals.css";
 import { AppShell, SidebarProvider } from "@/components/sidebar";
 import { ActivityProvider } from "@/components/activity-dock";

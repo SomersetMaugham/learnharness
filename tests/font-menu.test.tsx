@@ -13,10 +13,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "node:test";
 import { FontMenuList, customFamilyFor, fontMenuResults } from "../components/settings/model-menu";
 import {
-	CURATED_FALLBACK_FONTS,
+	BUNDLED_READING_FONTS,
 	DEFAULT_READING_FONT,
 	AppearanceSection,
 	composeFontFamily,
+	previewStack,
+	fontAvailable,
 } from "../components/settings/appearance-section";
 
 describe("fontMenuResults — the DEFAULT row is a candidate, never a ghost pick", () => {
@@ -57,13 +59,32 @@ describe("composeFontFamily — null/blank = the factory family, otherwise verba
 	});
 });
 
-describe("the curated dev-browser fallback", () => {
-	it("is the app's knowns + ubiquitous macOS families — and never a fabricated system list member for the factory family", () => {
-		assert.ok(CURATED_FALLBACK_FONTS.includes("CMU Serif"));
-		assert.ok(CURATED_FALLBACK_FONTS.includes("Georgia"));
-		// the factory family lives ONLY as the DEFAULT row — never a
-		// duplicated family row
-		assert.ok(!CURATED_FALLBACK_FONTS.includes(DEFAULT_READING_FONT));
+describe("the bundled Korean reading fonts", () => {
+	it("are imported by the root layout, and never include the factory family (the DEFAULT row is it)", () => {
+		const layout = fs.readFileSync("app/layout.tsx", "utf8");
+		assert.ok(!BUNDLED_READING_FONTS.includes(DEFAULT_READING_FONT));
+		for (const family of BUNDLED_READING_FONTS) {
+			const pkg = family === "Pretendard" ? "pretendard/" : `@fontsource/${family.toLowerCase().replace(/ /g, "-")}/`;
+			assert.ok(layout.includes(pkg), `${family} stylesheet is imported`);
+		}
+	});
+
+	it("fontAvailable: bundled families are always known; without a DOM an installed family is unknown (null)", () => {
+		for (const family of BUNDLED_READING_FONTS) assert.equal(fontAvailable(family), true);
+		assert.equal(fontAvailable("IBMPlexSansKR"), null);
+	});
+
+	it("the stored-family warning never renders on the server (no hydration mismatch)", () => {
+		const html = renderToStaticMarkup(
+			<AppearanceSection appearance={{ fontFamily: "IBMPlexSansKR" }} onSectionChange={() => {}} />,
+		);
+		assert.ok(!html.includes('data-testid="font-row-missing"'));
+		assert.ok(html.includes(`Empty = ${DEFAULT_READING_FONT}`));
+	});
+
+	it("previewStack: null = the factory font; a family leads with itself and falls back to it", () => {
+		assert.ok(previewStack(null).startsWith("var(--font-sans3)"));
+		assert.ok(previewStack("Gaegu").startsWith('"Gaegu", var(--font-sans3)'));
 	});
 });
 
@@ -107,6 +128,19 @@ describe("FontMenuList (thin SSR)", () => {
 			<FontMenuList families={undefined} effectiveFamily={null} onPick={() => {}} />,
 		);
 		assert.ok(html.includes("Loading fonts…"));
+	});
+});
+
+describe("FontMenuList preview mode", () => {
+	it("with onPreview, each row is set in its own family", () => {
+		const html = renderToStaticMarkup(
+			<FontMenuList families={["Gaegu"]} effectiveFamily={null} onPick={() => {}} onPreview={() => {}} />,
+		);
+		assert.ok(html.includes("font-family:&quot;Gaegu&quot;"), "the row specimen");
+	});
+	it("without onPreview, rows keep the UI font", () => {
+		const html = renderToStaticMarkup(<FontMenuList families={["Gaegu"]} effectiveFamily={null} onPick={() => {}} />);
+		assert.ok(!html.includes("font-family"));
 	});
 });
 

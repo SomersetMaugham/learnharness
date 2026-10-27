@@ -15,22 +15,21 @@
  * convention: the whole row dims when a parent is off (stored values
  * persist but resolve inert — the switch shows stored, the dim effective).
  *
- * Reading font (appearance wave, 2026-09-26, owner ruling): a searchable
- * dropdown of the user's INSTALLED fonts (FontMenuList over model-menu's
- * machine) fed by window.queryLocalFonts() in the desktop shell — the
- * enumeration is click-bound (the API requires user activation), deduped
- * to unique families, the factory family excluded (the DEFAULT row is
- * it). In a plain dev browser the API is absent → a small curated list
- * + a footer that says exactly that — never a fabricated system list.
- * The custom-family input inside the menu is the manual escape path.
- * Empty/unset keeps meaning Source Sans 3.
+ * Reading font (Korean font wave, 2026-10-27, owner ask): a COMPARE
+ * panel — left = the font in use now, right = the font being previewed
+ * (hover / arrow-walk / click in the list below), an Apply button commits.
+ * The list is the BUNDLED friendly Korean families (BUNDLED_READING_FONTS,
+ * imported in app/layout.tsx — no CDN, same on every machine); the old
+ * installed-font enumeration (queryLocalFonts, empty in Electron 44) is
+ * gone. The custom-family search escape remains. Empty/unset keeps
+ * meaning Source Sans 3.
  *
  * Emphasis inks (same wave): the factory tokens default to the regular
  * text color now (globals.css); the rows' empty-state labels say "same
  * as text".
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
 	EXTRACTION_CHUNK_TOKENS_FLOOR,
 	resolveSettings,
@@ -47,35 +46,71 @@ import { CommitInput, SettingsRow, ThinSelect, Toggle } from "./controls.tsx";
  *  this). Exported for tests. */
 export const DEFAULT_READING_FONT = "Source Sans 3";
 
-/** The dev-browser fallback list (queryLocalFonts is absent there):
- *  the app's own knowns plus a handful of ubiquitous macOS families,
- *  honestly LABELED as common — never presented as the system's real
- *  list. The factory family is absent: the DEFAULT row is it. Exported
- *  for tests. */
-export const CURATED_FALLBACK_FONTS: readonly string[] = [
-	"Arial",
-	"CMU Serif",
-	"Courier New",
-	"Georgia",
-	"Helvetica",
-	"Helvetica Neue",
-	"Menlo",
-	"Times New Roman",
-	"Trebuchet MS",
-	"Verdana",
+/** The bundled families the panel offers (CSS family names as the
+ *  imported @fontsource / pretendard stylesheets declare them — the
+ *  stored fontFamily is the name verbatim). The factory family is
+ *  absent: the DEFAULT row is it. Exported for tests. */
+export const BUNDLED_READING_FONTS: readonly string[] = [
+	"Pretendard",
+	"Nanum Gothic",
+	"Gowun Dodum",
+	"Gowun Batang",
+	"Gaegu",
 ];
 
-/** window.queryLocalFonts' shape as this section consumes it (family is
- *  the only field used; the API returns one FontData per FACE — the
- *  caller dedupes). */
-type LocalFontsApi = () => Promise<Array<{ family: string }>>;
+/** The compare panel's sample: Korean + Latin + digits, so the left and
+ *  right columns differ visibly in every script the lessons mix. */
+export const FONT_SAMPLE_TEXT =
+	"오늘도 천천히, 한 걸음씩 배워 봐요.\nThe quick brown fox jumps over the lazy dog. 0123456789";
 
-/** The Local Font Access seam — read lazily (SSR has no window, and
- *  render-time access would evaluate the API on the server). */
-function localFontsApi(): LocalFontsApi | null {
-	if (typeof window === "undefined") return null;
-	return (window as unknown as { queryLocalFonts?: LocalFontsApi }).queryLocalFonts ?? null;
+/** The CSS font-family stack a preview column renders in. null = the
+ *  factory reading font. Pure — exported for tests. */
+export function previewStack(family: string | null): string {
+	return family === null
+		? "var(--font-sans3), ui-sans-serif, system-ui, sans-serif"
+		: `"${family}", var(--font-sans3), ui-sans-serif, system-ui, sans-serif`;
 }
+
+/** Whether the renderer resolves `family` to a real installed face
+ *  (font-name warning, 2026-10-27): CSS silently falls back on an
+ *  unknown family, so a file name typed for a family name
+ *  ("IBMPlexSansKR" for "IBM Plex Sans KR") looked like a dead Apply.
+ *  The probe draws a sample in `family` over two different generic
+ *  fallbacks; a real face changes the width against at least one.
+ *  document.fonts.check is no use here — it answers true for unknown
+ *  local families. Bundled families are known (and lazily loaded, so a
+ *  probe could miss them). null = no DOM (SSR / tests). */
+export function fontAvailable(family: string): boolean | null {
+	if (BUNDLED_READING_FONTS.includes(family)) return true;
+	if (typeof document === "undefined") return null;
+	const ctx = document.createElement("canvas").getContext("2d");
+	if (!ctx) return null;
+	const sample = "mmmmmmmmmmlli 가나다라마 0123";
+	const quoted = `"${family.replace(/["\\]/g, "\\$&")}"`;
+	return ["monospace", "serif"].some((fallback) => {
+		ctx.font = `40px ${fallback}`;
+		const base = ctx.measureText(sample).width;
+		ctx.font = `40px ${quoted}, ${fallback}`;
+		return ctx.measureText(sample).width !== base;
+	});
+}
+
+const noSubscribe = () => () => {};
+
+/** fontAvailable as a hook: null on the server snapshot, so a stored
+ *  missing family never causes a hydration mismatch. null family (the
+ *  factory default) is always fine. */
+function useFontAvailable(family: string | null): boolean | null {
+	return useSyncExternalStore(
+		noSubscribe,
+		() => (family === null ? true : fontAvailable(family)),
+		() => null,
+	);
+}
+
+/** The warning both surfaces show for a family the renderer can't find. */
+export const FONT_MISSING_MESSAGE =
+	"Not found on this computer — showing Source Sans 3. Use the exact family name (Windows Settings › Fonts), and restart the app after installing a font.";
 
 /** Compose the reading-font pick: null (or blank) = the factory
  *  Source Sans 3; otherwise the family verbatim (trimmed — the
@@ -86,6 +121,42 @@ export function composeFontFamily(
 ): AppearanceSettings {
 	const value = family?.trim() ?? "";
 	return { ...appearance, fontFamily: value === "" ? null : value };
+}
+
+/** One column of the compare panel: a label, the family's name, and the
+ *  sample set in that family. name === null = nothing previewed yet. */
+function FontSpecimen({
+	title,
+	name,
+	family,
+	testid,
+}: {
+	title: string;
+	name: string | null;
+	family: string | null;
+	testid: string;
+}) {
+	const available = useFontAvailable(name === null ? null : family);
+	return (
+		<div data-testid={testid} className="flex min-h-32 flex-col gap-1.5 rounded-lg border border-border bg-background p-2.5">
+			<div className="flex items-center justify-between gap-2 text-muted-foreground">
+				<span>{title}</span>
+				<span className="truncate">{name ?? "—"}</span>
+			</div>
+			{name === null ? (
+				<p className="text-muted-foreground">Hover or pick a font to preview it here.</p>
+			) : (
+				<p className="whitespace-pre-line text-sm leading-relaxed text-foreground" style={{ fontFamily: previewStack(family) }}>
+					{FONT_SAMPLE_TEXT}
+				</p>
+			)}
+			{available === false && (
+				<p data-testid={`${testid}-missing`} role="alert" className="text-amber-400">
+					⚠ {FONT_MISSING_MESSAGE}
+				</p>
+			)}
+		</div>
+	);
 }
 
 export function AppearanceSection({
@@ -100,60 +171,29 @@ export function AppearanceSection({
 	const { appearance: resolved } = useAppearance();
 	const md = appearance?.mdRendering;
 
-	// The font dropdown's open state + its enumeration cache. undefined =
-	// not enumerated yet (desktop: click-bound queryLocalFonts pending);
-	// null = enumeration UNAVAILABLE (the API is absent in a plain
-	// browser, rejected, or resolved EMPTY — Electron 44's local-fonts
-	// grant passes and the enumeration still yields zero fonts,
-	// reproduced 2026-09-26) → the curated fallback; a list = the deduped
-	// families. enumEmpty distinguishes WHY it fell back, for the footer.
+	// The compare panel: open state, the CLICKED pick (undefined = none
+	// yet; null = the default row), and the transient hover/walk preview.
+	// The right column shows hover ?? picked; Apply commits the pick.
 	const [fontMenuOpen, setFontMenuOpen] = useState(false);
-	const [localFonts, setLocalFonts] = useState<string[] | null | undefined>(undefined);
-	const [enumEmpty, setEnumEmpty] = useState(false);
+	const [picked, setPicked] = useState<string | null | undefined>(undefined);
+	const [hovered, setHovered] = useState<string | null | undefined>(undefined);
 	const menuAnchorRef = useRef<HTMLSpanElement>(null);
 
-	// The enumeration runs INSIDE the trigger click — queryLocalFonts
-	// requires user activation, so it cannot be a mount effect. First
-	// open only: the families are cached for the section's life (font
-	// installs mid-dialog are not a case); ANY unavailable enumeration
-	// (absent / rejected / empty) falls back to the curated list rather
-	// than an empty picker.
 	const openFontMenu = () => {
-		setFontMenuOpen((open) => {
-			if (!open && localFonts === undefined) {
-				const api = localFontsApi();
-				if (api === null) {
-					setLocalFonts(null);
-					setEnumEmpty(false);
-				} else {
-					void api()
-						.then((fonts) => {
-							const families = [...new Set(fonts.map((f) => f.family))]
-								.filter((f) => f !== DEFAULT_READING_FONT)
-								.sort((a, b) => a.localeCompare(b));
-							if (families.length === 0) {
-								// Resolved-but-empty: not a failure the catch sees —
-								// an honest unavailable (this Electron 44 build
-								// enumerates nothing even granted).
-								setLocalFonts(null);
-								setEnumEmpty(true);
-							} else {
-								setLocalFonts(families);
-							}
-						})
-						.catch(() => {
-							setLocalFonts(null);
-							setEnumEmpty(false);
-						});
-				}
-			}
-			return !open;
-		});
+		setPicked(undefined);
+		setHovered(undefined);
+		setFontMenuOpen((open) => !open);
 	};
 
-	const pickFont = (family: string | null) => {
+	const currentFont = appearance?.fontFamily || null;
+	const currentAvailable = useFontAvailable(currentFont);
+	const previewing = hovered !== undefined ? hovered : picked;
+	const canApply = picked !== undefined && picked !== currentFont;
+
+	const applyFont = () => {
+		if (picked === undefined) return;
 		setFontMenuOpen(false);
-		onSectionChange(composeFontFamily(appearance, family));
+		onSectionChange(composeFontFamily(appearance, picked));
 	};
 
 	// The dropdown contract (agent-section's, mirrored): any click
@@ -206,7 +246,15 @@ export function AppearanceSection({
 			</SettingsRow>
 			<SettingsRow
 				label="Reading font"
-				hint={`Empty = ${DEFAULT_READING_FONT}`}
+				hint={
+					currentAvailable === false ? (
+						<span data-testid="font-row-missing" className="text-amber-400">
+							⚠ Not found — showing {DEFAULT_READING_FONT}
+						</span>
+					) : (
+						`Empty = ${DEFAULT_READING_FONT}`
+					)
+				}
 				testid="row-font"
 			>
 				<span ref={fontMenuOpen ? menuAnchorRef : undefined} className="relative flex items-center gap-2">
@@ -237,7 +285,7 @@ export function AppearanceSection({
 						return fontMenuOpen ? (
 							triggerButton
 						) : (
-							<Hint label="Choose from your installed fonts" side="left">
+							<Hint label="Compare and choose a reading font" side="left">
 								{triggerButton}
 							</Hint>
 						);
@@ -247,22 +295,42 @@ export function AppearanceSection({
 							preferredSide="down"
 							anchorTestid="font-trigger"
 							testid="font-menu"
-							menuClass="flex w-[18rem] flex-col gap-0.5 rounded-xl border border-border bg-card p-2 text-xs shadow-xl"
+							menuClass="flex w-[30rem] max-w-[92vw] flex-col gap-2 rounded-xl border border-border bg-card p-3 text-xs shadow-xl"
 						>
-							<FontMenuList
-								families={localFonts === undefined ? undefined : (localFonts ?? [...CURATED_FALLBACK_FONTS])}
-								effectiveFamily={appearance?.fontFamily ?? null}
-								onPick={pickFont}
-								footer={
-									localFonts === undefined
-										? undefined
-										: localFonts === null
-											? enumEmpty
-												? "Common families — installed fonts could not be read"
-												: "Common families — your installed list needs the desktop app"
-											: "Your installed fonts"
-								}
-							/>
+							<div className="grid grid-cols-2 gap-2" data-testid="font-compare">
+								<FontSpecimen
+									testid="font-specimen-current"
+									title="Current"
+									name={currentFont ?? DEFAULT_READING_FONT}
+									family={currentFont}
+								/>
+								<FontSpecimen
+									testid="font-specimen-preview"
+									title="Preview"
+									name={previewing === undefined ? null : (previewing ?? DEFAULT_READING_FONT)}
+									family={previewing === undefined ? currentFont : previewing}
+								/>
+							</div>
+							<div className="flex flex-col gap-0.5">
+								<FontMenuList
+									families={[...BUNDLED_READING_FONTS]}
+									effectiveFamily={picked !== undefined ? picked : currentFont}
+									onPick={(family) => setPicked(family)}
+									onPreview={setHovered}
+									footer="Bundled with the app — hover to preview, click to select"
+								/>
+							</div>
+							<div className="flex justify-end">
+								<button
+									type="button"
+									data-testid="font-apply"
+									disabled={!canApply}
+									onClick={applyFont}
+									className="h-7 rounded-sm border border-border bg-background px-3 font-ui text-xs text-foreground transition-colors hover:border-muted-foreground/50 disabled:cursor-not-allowed disabled:opacity-40"
+								>
+									Apply
+								</button>
+							</div>
 						</MenuShell>
 					)}
 				</span>

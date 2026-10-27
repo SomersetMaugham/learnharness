@@ -317,6 +317,7 @@ export function FontMenuList({
 	families,
 	effectiveFamily,
 	onPick,
+	onPreview,
 	footer,
 }: {
 	/** Enumerated font families (already deduped/sorted by the caller);
@@ -326,6 +327,11 @@ export function FontMenuList({
 	effectiveFamily: string | null;
 	/** Receives the pick: a family string, or null for the default. */
 	onPick: (family: string | null) => void;
+	/** Optional: fired when a row is hovered or walked to with the arrow
+	 *  keys (undefined = pointer left / walk cleared). The compare panel
+	 *  uses it for the live preview; rows then also render in their own
+	 *  family so the list itself is a specimen. */
+	onPreview?: (family: string | null | undefined) => void;
 	/** Quiet footer note under the list. */
 	footer?: string;
 }) {
@@ -364,11 +370,13 @@ export function FontMenuList({
 						e.preventDefault();
 						e.stopPropagation();
 						if (walkable.length === 0) return;
-						setMenuIdx((i) =>
+						const next =
 							e.key === "ArrowDown"
-								? Math.min((i ?? -1) + 1, walkable.length - 1)
-								: Math.max((i ?? walkable.length) - 1, 0),
-						);
+								? Math.min((menuIdx ?? -1) + 1, walkable.length - 1)
+								: Math.max((menuIdx ?? walkable.length) - 1, 0);
+						setMenuIdx(next);
+						const walked = walkable[next];
+						if (walked !== undefined && walked !== "__custom__") onPreview?.(walked);
 					} else if (e.key === "Enter") {
 						const chosen = walkable[menuIdx ?? 0];
 						if (chosen !== undefined) {
@@ -394,11 +402,18 @@ export function FontMenuList({
 									data-testid={isDefault ? "font-option-default" : `font-option-${family.replace(/[^a-z0-9-]/gi, "_")}`}
 									data-idx={i}
 									onClick={() => onPick(family)}
+									onMouseEnter={onPreview ? () => onPreview(family) : undefined}
+									onMouseLeave={onPreview ? () => onPreview(undefined) : undefined}
 									className={`flex w-full items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-muted ${
 										i === menuIdx ? "bg-accent/40 ring-1 ring-inset ring-border" : ""
 									}${effective && i !== menuIdx ? " bg-muted/60" : ""}`}
 								>
-									<span className="truncate text-card-foreground">{family ?? "Source Sans 3"}</span>
+									<span
+										className="truncate text-card-foreground"
+										style={onPreview && family !== null ? { fontFamily: `"${family}", var(--font-sans3), sans-serif` } : undefined}
+									>
+										{family ?? "Source Sans 3"}
+									</span>
 									<span className="shrink-0 text-muted-foreground">{isDefault ? "default" : effective && <span aria-hidden>✓</span>}</span>
 								</button>
 							</li>
