@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import {
+	assertNotProtected,
 	capOutput,
 	formatSize,
 	MAX_OUTPUT_BYTES,
@@ -41,6 +42,7 @@ export const findTool: AgentTool<typeof findInput> = {
 	execute: serverExecute("find", findInput, async (input, ctx) => {
 		if (ctx?.signal?.aborted) return "Operation aborted";
 		const searchPath = resolveSourcePath(input.path);
+		assertNotProtected(searchPath);
 		let stat;
 		try {
 			stat = await fs.stat(searchPath);

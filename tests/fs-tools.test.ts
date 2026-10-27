@@ -5,7 +5,8 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { expandBraces, globToRegex, matchGlob, walkFiles } from "../src/agent/tools/fs-shared.ts";
+import { expandBraces, globToRegex, isProtectedPath, matchGlob, walkFiles } from "../src/agent/tools/fs-shared.ts";
+import { AUTH_FILE, PATHS, ROOT } from "../config.ts";
 import { findTool } from "../src/agent/tools/find.ts";
 import { grepTool } from "../src/agent/tools/grep.ts";
 import { lsTool } from "../src/agent/tools/ls.ts";
@@ -248,5 +249,67 @@ describe("abort plumbing (the 2026-09-19 cascade fix)", () => {
 		const out = await runText(grepTool, { pattern: "needle", path: root }, ac.signal);
 		assert.match(out, /aborted/);
 		assert.ok(Date.now() - started < 5_000, "returned promptly");
+	});
+});
+
+describe("protected locations (review fix, 2026-10-27)", () => {
+	/** A fake home with a credential store, a link into it, and notes. */
+	async function fakeHome(): Promise<string> {
+		const home = await fs.mkdtemp(path.join(os.tmpdir(), "lh-home-"));
+		await fs.mkdir(path.join(home, ".ssh"));
+		await fs.mkdir(path.join(home, "notes"));
+		await fs.writeFile(path.join(home, ".ssh", "id_ed25519"), "secret key\n");
+		await fs.writeFile(path.join(home, ".git-credentials"), "secret token\n");
+		await fs.writeFile(path.join(home, "notes", "keys.md"), "public notes\n");
+		// a junction needs no admin rights on Windows; a dir symlink elsewhere
+		await fs.symlink(path.join(home, ".ssh"), path.join(home, "innocent"), "junction");
+		return home;
+	}
+
+	it("credential stores are protected — through a link, too; ordinary files are not", async () => {
+		const home = await fakeHome();
+		assert.equal(isProtectedPath(path.join(home, ".ssh", "id_ed25519"), home), true);
+		assert.equal(isProtectedPath(path.join(home, ".ssh"), home), true);
+		assert.equal(isProtectedPath(path.join(home, ".git-credentials"), home), true);
+		assert.equal(isProtectedPath(path.join(home, "innocent", "id_ed25519"), home), true, "a link resolves to its target");
+		assert.equal(isProtectedPath(path.join(home, "notes", "keys.md"), home), false);
+		assert.equal(isProtectedPath(path.join(home, ".sshx"), home), false, "a prefix is not a match");
+		if (process.platform === "win32") assert.equal(isProtectedPath(path.join(home, ".SSH", "id_ed25519"), home), true);
+	});
+
+	it("the app's own records are protected: keys, ChatGPT login, data dir, repo .env files", () => {
+		assert.equal(isProtectedPath(AUTH_FILE), true);
+		assert.equal(isProtectedPath(path.join(path.dirname(AUTH_FILE), "chatgpt-credentials.json")), true);
+		assert.equal(isProtectedPath(path.join(PATHS.data, "chats", "chat_x.json")), true);
+		assert.equal(isProtectedPath(path.join(ROOT, ".env.local")), true);
+		assert.equal(isProtectedPath(path.join(ROOT, "package.json")), false);
+	});
+
+	it("on desktop the whole userData dir (auth.json's folder: cookies, local storage…) is protected", () => {
+		const cookies = path.join(path.dirname(AUTH_FILE), "Network", "Cookies");
+		assert.equal(isProtectedPath(cookies), false, "web/dev: only the named files");
+		process.env.LH_DESKTOP_SERVER = "1";
+		try {
+			assert.equal(isProtectedPath(cookies), true);
+		} finally {
+			delete process.env.LH_DESKTOP_SERVER;
+		}
+	});
+
+	it("walks skip protected entries silently (links included)", async () => {
+		const home = await fakeHome();
+		const seen: string[] = [];
+		await walkFiles(home, (f) => {
+			seen.push(path.relative(home, f).split(path.sep).join("/"));
+			return false;
+		}, undefined, home);
+		assert.deepEqual(seen, ["notes/keys.md"]);
+	});
+
+	it("read/ls/find/grep refuse a protected path with an Access denied error", async () => {
+		await assert.rejects(async () => readTool.execute!("c", { path: AUTH_FILE }), /Access denied/);
+		await assert.rejects(async () => lsTool.execute!("c", { path: PATHS.data }), /Access denied/);
+		await assert.rejects(async () => findTool.execute!("c", { pattern: "*", path: PATHS.data }), /Access denied/);
+		await assert.rejects(async () => grepTool.execute!("c", { pattern: "x", path: path.join(ROOT, ".env.local") }), /Access denied/);
 	});
 });

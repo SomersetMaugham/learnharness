@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import {
+	assertNotProtected,
 	capOutput,
 	formatSize,
 	GREP_MAX_LINE_LENGTH,
@@ -54,6 +55,7 @@ export const grepTool: AgentTool<typeof grepInput> = {
 	execute: serverExecute("grep", grepInput, async (input, ctx) => {
 		if (ctx?.signal?.aborted) return "Operation aborted";
 		const searchPath = resolveSourcePath(input.path);
+		assertNotProtected(searchPath);
 
 		let stat;
 		try {

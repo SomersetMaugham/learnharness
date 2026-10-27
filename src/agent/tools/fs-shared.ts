@@ -1,6 +1,8 @@
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { AUTH_FILE, PATHS, ROOT } from "../../../config.ts";
 
 /**
  * Shared plumbing for the learner-filesystem tools (ls / find / grep) —
@@ -41,6 +43,60 @@ const EXCLUDED_DIR_NAMES = new Set(["node_modules", ".git", "Library", ".Trash"]
 export function resolveSourcePath(p?: string): string {
 	if (!p) return os.homedir();
 	return path.isAbsolute(p) ? p : path.join(os.homedir(), p);
+}
+
+/**
+ * PROTECTED LOCATIONS (review fix, 2026-10-27): the fs tools are read-only,
+ * but read-only is not harmless — a prompt-injected agent could read the
+ * app's plaintext keys and hand them to a research job's web_fetch. These
+ * locations are refused by read/ls/pdf and skipped by find/grep walks:
+ * the app's own records (the whole userData dir on desktop — keys, ChatGPT
+ * login, cookies, chats; the repo's auth/env/data files in dev) and the
+ * home dir's common credential stores. Everything else stays readable.
+ */
+const HOME_CREDENTIAL_PATHS = [
+	".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker",
+	path.join(".config", "gh"), ".netrc", ".git-credentials", ".npmrc",
+];
+
+const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
+
+/** Symlinks resolved (a link into ~/.ssh is ~/.ssh); a path that does not
+ *  exist yet keeps its lexical form — reading it fails on its own. */
+function canonical(p: string): string {
+	let real: string;
+	try {
+		real = realpathSync.native(p);
+	} catch {
+		real = path.resolve(p);
+	}
+	return CASE_INSENSITIVE_FS ? real.toLowerCase() : real;
+}
+
+/** One matcher per check/walk: the roots are canonicalized once, then each
+ *  candidate (already canonical) is a cheap prefix test. */
+function protectedMatcher(home: string): (canonicalPath: string) => boolean {
+	const roots = [
+		...(process.env.LH_DESKTOP_SERVER === "1" ? [path.dirname(AUTH_FILE)] : []),
+		AUTH_FILE,
+		path.join(path.dirname(AUTH_FILE), "chatgpt-credentials.json"),
+		PATHS.data,
+		...HOME_CREDENTIAL_PATHS.map((rel) => path.join(home, rel)),
+	].map(canonical);
+	const repoRoot = canonical(ROOT);
+	return (p) =>
+		roots.some((root) => p === root || p.startsWith(root + path.sep)) ||
+		// the repo's .env, .env.local, … (dev-mode secrets beside auth.json)
+		(path.dirname(p) === repoRoot && path.basename(p).startsWith(".env"));
+}
+
+export function isProtectedPath(p: string, home = os.homedir()): boolean {
+	return protectedMatcher(home)(canonical(p));
+}
+
+/** The refusal every fs tool gives for a protected path (the model sees it). */
+export function assertNotProtected(p: string): void {
+	if (isProtectedPath(p)) throw new Error(`Access denied: ${p} is a protected location (app data or credentials)`);
 }
 
 /** pi's formatSize idiom (50KB prints as "50.0KB"). */
@@ -127,7 +183,8 @@ export function matchGlob(relativePath: string, pattern: string): boolean {
 }
 
 /**
- * Depth-first walk under `root`, never entering EXCLUDED_DIR_NAMES.
+ * Depth-first walk under `root`, never entering EXCLUDED_DIR_NAMES and
+ * silently skipping protected locations (isProtectedPath).
  * `visit` receives absolute file paths; returning true STOPS the walk
  * (find's result limit). The deadline bounds a home-dir walk to
  * WALK_TIMEOUT_MS — partial results are the graceful degradation.
@@ -136,7 +193,16 @@ export async function walkFiles(
 	root: string,
 	visit: (filePath: string) => boolean | Promise<boolean>,
 	signal?: AbortSignal,
+	home = os.homedir(),
 ): Promise<{ timedOut: boolean; aborted: boolean }> {
+	// Symlinks are never followed below the root, so one realpath of the
+	// root makes every entry's canonical form a string join.
+	const isProtected = protectedMatcher(home);
+	const canonicalRoot = canonical(root);
+	const protectedEntry = (full: string) => {
+		const rel = path.relative(root, full);
+		return isProtected(path.join(canonicalRoot, CASE_INSENSITIVE_FS ? rel.toLowerCase() : rel));
+	};
 	const deadline = Date.now() + WALK_TIMEOUT_MS;
 	let timedOut = false;
 	let aborted = false;
@@ -168,9 +234,10 @@ export async function walkFiles(
 			}
 			const full = path.join(dir, entry.name);
 			if (entry.isDirectory()) {
-				if (EXCLUDED_DIR_NAMES.has(entry.name)) continue;
+				if (EXCLUDED_DIR_NAMES.has(entry.name) || protectedEntry(full)) continue;
 				if (await walkDir(full)) return true;
 			} else if (entry.isFile()) {
+				if (protectedEntry(full)) continue;
 				if (await visit(full)) return true;
 			}
 			// symlinks/other: not followed (pi's fd doesn't follow either)
