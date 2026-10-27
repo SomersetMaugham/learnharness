@@ -31,6 +31,7 @@ const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cj
 const { attachSubscriptionChild, subscriptionControl } = require("./subscription-ipc.cjs");
 const { desktopAPIHeaders } = require("./desktop-api.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
+const { openExternalLink } = require("./external-links.cjs");
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -285,7 +286,8 @@ function killServer() {
  *    (groundwork for the mic/STT milestone — Electron auto-approves by
  *    default, we do not);
  *  - will-navigate pinned to the app origin; window.open always denied —
- *    external links go to the real browser via shell.openExternal. */
+ *    external links (http/https/mailto only — external-links.cjs) go to the
+ *    real browser via shell.openExternal. */
 function createWindow(url) {
 	const win = new BrowserWindow({
 		width: 1440,
@@ -363,11 +365,11 @@ function createWindow(url) {
 	win.webContents.on("will-navigate", (event, target) => {
 		if (new URL(target).origin !== allowedOrigin()) {
 			event.preventDefault();
-			void shell.openExternal(target);
+			openExternalLink(target, { openExternal: (t) => shell.openExternal(t), log });
 		}
 	});
 	win.webContents.setWindowOpenHandler(({ url: target }) => {
-		void shell.openExternal(target);
+		openExternalLink(target, { openExternal: (t) => shell.openExternal(t), log });
 		return { action: "deny" };
 	});
 
